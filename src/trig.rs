@@ -1,3 +1,4 @@
+use bitvec::prelude::{BitArray, Msb0};
 use core::cmp::Ordering;
 use core::slice::RChunks;
 use Ordering::*;
@@ -28,6 +29,8 @@ const fn sin_exact(repr: u8) -> u64 {
     CURVE[repr as usize]
 }
 
+#[inline]
+#[must_use]
 const fn repr_mul(lhs: u64, rhs: u64, shift: i32) -> u64 {
     (((lhs as u128) * (rhs as u128)) >> (64i32 - shift)) as u64
 }
@@ -94,9 +97,7 @@ const fn quarter_sin(repr: u64) -> u64 {
 // computed by reflecting angles in the range (0.25, 0.5) to use quarter_sin.
 #[inline]
 #[must_use]
-const fn half_sin(repr: u64) -> Output {
-    let repr = repr & 0x7FFF_FFFF_FFFF_FFFFu64;
-
+fn half_sin(repr: BitArray<u64, Msb0>) -> Output {
     const ONE_QUARTER: u64 = 0x4000_0000_0000_0000;
     const ONE_HALF: u64 = 0x8000_0000_0000_0000;
 
@@ -117,19 +118,12 @@ const fn half_sin(repr: u64) -> Output {
 // of the half sin.
 #[inline]
 #[must_use]
-pub const fn sin(repr: u64) -> (Sign, Output) {
-    const MAX_BIT: u64 = 1 << 63;
-
-    let sign = if repr < MAX_BIT {
-        Sign::Positive
-    } else {
+pub fn sin(repr: BitArray<u64, Msb0>) -> (Sign, Output) {
+    let sign = if repr[0] {
         Sign::Negative
+    } else {
+        Sign::Positive
     };
 
     (sign, half_sin(repr))
-}
-
-#[inline]
-pub const fn cos(repr: u64) -> (Sign, Output) {
-    sin(repr.wrapping_add(0x4000_0000_0000_0000))
 }

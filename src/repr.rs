@@ -2,6 +2,9 @@ use core::num::FpCategory;
 
 use crate::consts;
 
+// TODO: We keep going back and forth on whether this type is needed. It is
+// nice to be able to keep track of the range of a repr with `const O`, but in
+// practice it somehow keeps *interfering* with the math we want to do.
 /// A BaseRepr is essentially fixed-precision value in the range [0..2^O).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -46,6 +49,10 @@ impl<const O: i32> BaseRepr<O> {
     #[must_use]
     pub const fn mul(self, other: Repr) -> Self {
         Self((((self.0 as u128) * (other.0 as u128)) >> 64) as u64)
+    }
+
+    pub const fn mul0(self, other: Repr) -> Repr {
+        Repr::new((((self.0 as u128) * (other.0 as u128)) >> (64 - O)) as u64)
     }
 
     #[inline]
