@@ -32,6 +32,10 @@ impl FloatBits {
         &self.repr[..52]
     }
 
+    pub fn set_raw_mantissa(&mut self, bits: &BitSlice<u64, O>) {
+        self.repr[..52].copy_from_bitslice(bits)
+    }
+
     pub fn raw_exponent(&self) -> &BitSlice<u64, Lsb0> {
         &self.repr[52..63]
     }

@@ -1,3 +1,6 @@
+/// Pre-computed values for sin(x), where x is scaled from 0..0.25 rotations.
+/// Mirrors and reflections of this curve, along with some interpolation, are
+/// used to calculate the actual trig functions.
 pub const CURVE: &[u64; 256] = &[
     0,
     113187093788755730,

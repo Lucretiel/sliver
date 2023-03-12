@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 bitvec = { version = "1.0.1", default-features = false }
+
+[dev-dependencies]
+anyhow = "1.0.69"
+inquire = "0.6.0"

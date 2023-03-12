@@ -7,5 +7,6 @@ mod consts;
 mod repr;
 mod table;
 mod trig;
+mod sign;
 
 pub use angle::Angle;

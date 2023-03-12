@@ -1,11 +1,23 @@
 use core::num::FpCategory;
 
-use crate::consts;
+use bitvec::{
+    field::BitField,
+    prelude::{BitArray, Lsb0, Msb0},
+    view::BitView,
+};
 
-// TODO: We keep going back and forth on whether this type is needed. It is
-// nice to be able to keep track of the range of a repr with `const O`, but in
-// practice it somehow keeps *interfering* with the math we want to do.
-/// A BaseRepr is essentially fixed-precision value in the range [0..2^O).
+use crate::sign::Sign;
+
+/// The value of the exponent bits equivalent to `2^0`.
+const FLOAT_ZERO_EXP: i32 = 0x03_FF;
+
+/// Fixed precision value. Represents a value in the range 0..2^O. Usually O
+/// is 0 and this represents a value from 0 to 1, but we also use it to store
+/// TAU (which has an exponent of 3).
+///
+/// This type probably has float conversion bugs when `O` is too high
+/// or too low (outside of the representable range of exponent in an f64),
+/// but it's not exported and we never use it that way, so it's fine.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct BaseRepr<const O: i32>(pub u64);
@@ -18,9 +30,10 @@ impl<const O: i32> BaseRepr<O> {
     }
 
     /// Create a new Repr value from a float. Returns None if the float isn't
-    /// a normal finite number.
+    /// a normal finite number. Performs a modular truncation if the float is
+    /// out of range (1.5 -> 0.5, -.25 => +.75).
     #[must_use]
-    pub const fn from_float(value: f64) -> Option<Self> {
+    pub fn from_float(value: f64) -> Option<Self> {
         let value = match value.classify() {
             FpCategory::Zero => return Some(Self(0)),
             FpCategory::Normal => value,
@@ -28,74 +41,88 @@ impl<const O: i32> BaseRepr<O> {
         };
 
         let float_repr = value.to_bits();
-        let value_preshift = (float_repr & consts::MANTISSA_MASK) | consts::EXTRA_FLOAT_BIT;
-        let exp = (float_repr >> 52) & consts::EXP_MASK;
-        let exp_difference = (exp as i32) - consts::FLOAT_ZERO_EXP + 12 - O;
+        let float_repr = float_repr.view_bits::<Lsb0>();
 
-        Some(Self(if exp_difference.is_negative() {
-            value_preshift >> exp_difference.abs()
+        // The "true" mantissa of the float, including the omitted 1 bit
+        // stored in the least significant 53
+        let mantissa = {
+            let mut mantissa: u64 = float_repr[..52].load();
+            mantissa.view_bits_mut::<Lsb0>().set(52, true);
+            mantissa
+        };
+
+        // The shift distance, based on the exponent in the float
+        let shift_distance = {
+            let raw_exponent = float_repr[52..63].load::<u32>() as i32;
+            let exponent = raw_exponent - FLOAT_ZERO_EXP;
+            exponent + 12 - O
+        };
+
+        // Perform the shift
+        let fixed_point_repr = if shift_distance.is_negative() {
+            mantissa >> shift_distance.abs()
         } else {
-            value_preshift << exp_difference
-        }))
+            mantissa << shift_distance
+        };
+
+        let sign = Sign::from_bit(float_repr[63]);
+
+        // If the value is negative, perform a negation then 2's complement
+        // cast. This turns out to do the right thing with regard to modular
+        // arithmetic
+        let sign_adjusted_repr = if matches!(sign, Sign::Positive) {
+            fixed_point_repr
+        } else {
+            let repr = fixed_point_repr as i64;
+            let repr = repr.wrapping_neg();
+            repr as u64
+        };
+
+        Some(Self(sign_adjusted_repr))
     }
 
-    #[inline]
-    #[must_use]
-    pub const fn as_repr(self) -> u64 {
-        self.0
-    }
-
+    /// Multiply a pair of `BaseRepr` values. One of them must be
+    /// `BaseRepr<0>`.
     #[inline]
     #[must_use]
     pub const fn mul(self, other: Repr) -> Self {
         Self((((self.0 as u128) * (other.0 as u128)) >> 64) as u64)
     }
 
+    /// Multiply a pair of `BaseRepr` values, one of which must be
+    /// `BaseRepr<0>`, and return the result as a `BaseRepr<0>`.
+    #[must_use]
+    #[inline]
     pub const fn mul0(self, other: Repr) -> Repr {
         Repr::new((((self.0 as u128) * (other.0 as u128)) >> (64 - O)) as u64)
     }
 
     #[inline]
     #[must_use]
-    pub const fn wrapping_add(self, rhs: Self) -> Self {
-        Self(self.0.wrapping_add(rhs.0))
+    pub const fn saturating_add(self, rhs: Self) -> Self {
+        Self(self.0.saturating_add(rhs.0))
     }
 
-    #[inline]
+    /// Convert this `Repr` value to an `f64`, retaining as much precision as
+    /// possible.
     #[must_use]
-    pub const fn wrapping_sub(self, rhs: Self) -> Self {
-        Self(self.0.wrapping_sub(rhs.0))
-    }
-
-    #[must_use]
-    pub const fn as_float(self) -> f64 {
+    pub fn as_float(self) -> f64 {
         let repr = self.0;
+        let view = repr.view_bits::<Msb0>();
 
-        if repr == 0 {
-            return 0.0;
-        }
+        let Some(one_idx) = view.first_one() else { return 0.0 };
+        let mantissa = &view[one_idx + 1..];
+        let mantissa = mantissa.get(..52).unwrap_or(mantissa);
 
-        let zeroes = repr.leading_zeros() as i32;
-        let precision_adjustment = zeroes + 1;
+        // Safety: one_idx in in 0..64, so it surely fits in an i32
+        let exponent = O - 1 - (one_idx as i32);
+        let biased_exponent = FLOAT_ZERO_EXP + exponent;
 
-        let computed_exp = consts::FLOAT_ZERO_EXP - precision_adjustment + O;
-
-        let mantissa = repr >> (12i32 - precision_adjustment);
-        let mantissa = mantissa & consts::MANTISSA_MASK;
-        let shifted_exp = (computed_exp as u64) << 52;
-
-        let float_repr = mantissa | shifted_exp;
-
-        f64::from_bits(float_repr)
-    }
-
-    #[must_use]
-    #[inline]
-    pub const fn as_repr0(self) -> Repr {
-        Repr::new(if O.is_negative() {
-            self.0 >> O.abs()
-        } else {
-            self.0 << O
+        f64::from_bits({
+            let mut float_repr: BitArray<u64, Lsb0> = BitArray::ZERO;
+            float_repr[..52].store(mantissa.load::<u64>());
+            float_repr[52..63].store(biased_exponent);
+            float_repr.load()
         })
     }
 }
@@ -125,6 +152,18 @@ mod build_repr_tests {
     }
 
     #[test]
+    fn negative_overflow() {
+        let repr = Repr::from_float(-1.5).unwrap();
+        assert_eq!(repr.0, 0x80_00_00_00_00_00_00_00);
+    }
+
+    #[test]
+    fn negative_modular_overflow() {
+        let repr = Repr::from_float(-1.75).unwrap();
+        assert_eq!(repr.0, 0x40_00_00_00_00_00_00_00);
+    }
+
+    #[test]
     fn one_point_five_overflow() {
         let repr = Repr::from_float(1.5).unwrap();
         assert_eq!(repr.0, 0x80_00_00_00_00_00_00_00)
@@ -134,6 +173,12 @@ mod build_repr_tests {
     fn shifted() {
         let repr = BaseRepr::<1>::from_float(1.5).unwrap();
         assert_eq!(repr.0, 0xC0_00_00_00_00_00_00_00)
+    }
+
+    #[test]
+    fn shifted_2() {
+        let repr = BaseRepr::<2>::from_float(2.0).unwrap();
+        assert_eq!(repr.0, 0x80_00_00_00_00_00_00_00)
     }
 }
 

@@ -1,12 +1,8 @@
-use core::{
-    num::FpCategory,
-    ops::{Add, AddAssign, Mul, Sub, SubAssign},
-};
+use core::f64::consts as f64_consts;
 
-use crate::{
-    consts,
-    repr::{BaseRepr, Repr},
-};
+use bitvec::{bitarr, field::BitField as _, order::Msb0};
+
+use crate::{consts, repr::Repr, trig};
 
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
@@ -16,45 +12,81 @@ impl Angle {
     /// Create a new float from the representational format. The representation
     /// here is a fractional value in the range [0, 1), filling the full space
     /// of a u64.
+
+    #[inline]
+    #[must_use]
     pub const fn from_repr(repr: u64) -> Self {
         Self(Repr::new(repr))
     }
 
-    /// Create a new float from a fractional number of rotations. This will
-    /// be `const` when the relevant float methods are stabilized.
-    pub const fn from_rotations(rotations: f64) -> Option<Self> {
-        match Repr::from_float(rotations) {
-            Some(repr) => Some(Self(repr)),
-            None => None,
-        }
+    /// Create a new float from a fractional number of rotations.
+
+    #[inline]
+    #[must_use]
+    pub fn from_rotations(rotations: f64) -> Option<Self> {
+        Repr::from_float(rotations).map(Self)
     }
 
-    pub const fn from_radians(radians: f64) -> Self {
-        todo!()
+    #[inline]
+    #[must_use]
+    pub fn from_radians(radians: f64) -> Option<Self> {
+        // TODO: find some way with integer division. Maybe a shift-left into
+        // an i128, then divide.
+        //
+        // We have repr::div, but we need a reliable way to convert radians
+        // to float without truncation
+        Self::from_rotations(radians / f64_consts::TAU)
     }
 
-    pub const fn from_degrees(degrees: f64) -> Self {
-        todo!()
+    #[inline]
+    #[must_use]
+    pub fn from_degrees(degrees: f64) -> Option<Self> {
+        Self::from_rotations(degrees / 360.0)
     }
 
-    pub const fn as_rotations(self) -> f64 {
+    /// Get a lossless representation of this angle as an unsigned integer.
+
+    #[inline]
+    #[must_use]
+    pub fn repr(self) -> u64 {
+        self.0 .0
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn as_rotations(self) -> f64 {
         self.0.as_float()
     }
 
-    pub const fn as_radians(self) -> f64 {
+    #[inline]
+    #[must_use]
+    pub fn as_radians(self) -> f64 {
         consts::TAU.mul(self.0).as_float()
     }
 
-    pub const fn as_degrees(self) -> f64 {
-        // TODO: We don't need to use a u128 if there are 9 or more leading 0
-        // bits. We assume for now that the branch isn't worth it, especially
-        // since typical use cases won't be such tiny fractions of a degree.
+    #[inline]
+    #[must_use]
+    pub fn as_degrees(self) -> f64 {
+        consts::DEGREES.mul(self.0).as_float()
+    }
 
-        let widened = self.0.as_repr() as u128;
-        let degrees = widened * 360;
-        let shifted = degrees >> 9;
-        debug_assert!(shifted.leading_zeros() >= 64, "overflowed a u64 somehow");
-        BaseRepr::<9>::new(shifted as u64).as_float()
+    #[inline]
+    #[must_use]
+    pub fn sin(self) -> f64 {
+        trig::sin(self.repr()).as_float()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn cos(self) -> f64 {
+        let quarter: u64 = bitarr!(u64, Msb0; 0, 1, 0, 0).load();
+        trig::sin(self.repr().wrapping_add(quarter)).as_float()
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn tan(self) -> f64 {
+        self.sin() / self.cos()
     }
 }
 
